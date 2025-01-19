@@ -2,4 +2,5 @@
 
 - Measures voltage in range 0 to 36V
 - Measures current
-- Todo: integrate Ah and Wh
+- Integrates Ah and Wh
+- Shows the results on OLED display

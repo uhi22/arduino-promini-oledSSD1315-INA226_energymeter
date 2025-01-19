@@ -32,9 +32,7 @@ INA226_WE ina226 = INA226_WE(I2C_ADDRESS_INA226);
 U8X8_SSD1306_128X64_NONAME_HW_I2C u8x8(U8X8_PIN_NONE);
 #endif
 
-//float f;
 char stringBuffer[20];
-char bigBuffer[20];
 
 float shuntVoltage_mV = 0.0;
 float loadVoltage_V = 0.0;
@@ -45,6 +43,7 @@ float capacity_mAs;
 float energy_mWs;
 uint32_t lastIntegrationTime;
 
+/* integrates the current and the power over the time */
 void integrateEnergy(void) {
   uint32_t deltaT_ms, tNow;
   float f_mAs, f_mWs;
@@ -94,8 +93,8 @@ in an update-interval of 2*140µs*512=143ms. This has the following benefits:
 - catches ripples quite good due to the fast sampling and long averaging.
 - has relaxed requirements regarding integrating the measured values to Ah and Wh. 100ms integration cycle is fine without data lost.
 */
-
   ina226.setAverage(AVERAGE_512); // choose mode and uncomment for change of default
+
   /* Set conversion time in microseconds
      One set of shunt and bus voltage conversion will take: 
      number of samples to be averaged x conversion time x 2
@@ -124,8 +123,11 @@ in an update-interval of 2*140µs*512=143ms. This has the following benefits:
      Correction factor = current delivered from calibrated equipment / current delivered by INA226
   */
   // ina226.setCorrectionFactor(0.95);
-  
-  
+
+  /* configure the shunt resistance */
+  #define SHUNT_OHMS (0.00101f) /* for demonstration: ~80mm of 1.5mm² copper wire */
+  #define MAXAMPERE (0.08f/SHUNT_OHMS)
+  ina226.setResistorRange(SHUNT_OHMS, MAXAMPERE);
   
   //ina226.waitUntilConversionCompleted(); //if you comment this line the first data might be zero
   lastIntegrationTime = millis();
@@ -152,7 +154,11 @@ void loop(void) {
   }
   Serial.println();
   #endif
+
+  /* integrate the current and the power over time, to get energy and capacity */
   integrateEnergy();
+
+  /* show the results on the display */
   #ifdef USE_BIG_NUMBERS
     u8x8.drawString(0, 0, "V");
     u8x8.drawString(0, 2, "mA");
@@ -173,15 +179,12 @@ void loop(void) {
     u8x8.drawString(0, 6, "Wh");
 
     dtostrf(busVoltage_V,6,2, stringBuffer);  u8x8.drawString(1, 0, stringBuffer);
-    dtostrf(current_mA,6,2, stringBuffer);    u8x8.drawString(2, 1, stringBuffer);
+    dtostrf(current_mA,7,0, stringBuffer);    u8x8.drawString(2, 1, stringBuffer);
     dtostrf(power_mW,6,1, stringBuffer);      u8x8.drawString(2, 2, stringBuffer);
     dtostrf(capacity_mAs,5,0, stringBuffer);  u8x8.drawString(3, 3, stringBuffer);
     dtostrf(energy_mWs,5,0, stringBuffer);    u8x8.drawString(3, 4, stringBuffer);
     dtostrf(capacity_mAs/3600.0/1000.0,5,2, stringBuffer);  u8x8.drawString(3, 5, stringBuffer);
     dtostrf(energy_mWs/3600.0/1000.0,5,2, stringBuffer);    u8x8.drawString(3, 6, stringBuffer);
-    
-
-  #endif  
-  //delay(3000);
-  delay(100);
+  #endif
+  delay(100); /* wait a little bit, just to avoid fast flickering display. */
 }
