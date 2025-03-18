@@ -15,7 +15,12 @@
 
 #include <Arduino.h>
 
+#define USE_SERIAL_DATAOUT
+//#define USE_INA226
+
 #define USE_DISPLAY
+
+#define PIN_NOT_UNDERVOLTAGE 7
 
 #ifdef USE_DISPLAY
   #include <U8x8lib.h>
@@ -39,30 +44,70 @@ float loadVoltage_V = 0.0;
 float busVoltage_V = 0.0;
 float current_mA = 0.0;
 float power_mW = 0.0; 
-float capacity_mAs;
-float energy_mWs;
+float capacity_mAs, capacity_mAs_hiRes;
+float energy_mWs, energy_mWs_hiRes;
 uint32_t lastIntegrationTime;
 
+
+
 /* integrates the current and the power over the time */
+/* For the integration of very small portions to a huge value there is the risk, that the
+   float variable has too less resolution to correctly add a small amount to a huge number.
+   That's why we use two variables: a high-resolution variable which correctly accumulates the
+   small portions, and if this accumulated value reaches a certain threshold (in positive or
+   negative direction), we add the big portion to the low-resolution variable and subtract it
+   from the high-resolution variable.
+*/
+
+#define HI_RES_QUANTUM_mAs (36000.0f) /* 36000 mAs = 36As = 0.01Ah */
+#define HI_RES_QUANTUM_mWs (360000.0f) /* 360000 mWs = 360Ws = 0.1Wh */ 
+
 void integrateEnergy(void) {
   uint32_t deltaT_ms, tNow;
   float f_mAs, f_mWs;
   tNow = millis();
   deltaT_ms = tNow - lastIntegrationTime;
   f_mAs = current_mA * (float)deltaT_ms / 1000;
-  capacity_mAs += f_mAs; /* accumulate the mAs */
+  capacity_mAs_hiRes += f_mAs; /* accumulate the mAs in the hi-resolution variable */
+  while (capacity_mAs_hiRes>HI_RES_QUANTUM_mAs) {
+    capacity_mAs_hiRes-=HI_RES_QUANTUM_mAs;
+    capacity_mAs+=HI_RES_QUANTUM_mAs;
+  }
+  while (capacity_mAs_hiRes<-HI_RES_QUANTUM_mAs) {
+    capacity_mAs_hiRes+=HI_RES_QUANTUM_mAs;
+    capacity_mAs-=HI_RES_QUANTUM_mAs;
+  }
   f_mWs = f_mAs * busVoltage_V;
-  energy_mWs += f_mWs; /* accumulate the energy */
+  energy_mWs_hiRes += f_mWs; /* accumulate the energy in the hi-resolution variable */
+  while (energy_mWs_hiRes>HI_RES_QUANTUM_mWs) {
+    energy_mWs_hiRes-=HI_RES_QUANTUM_mWs;
+    energy_mWs+=HI_RES_QUANTUM_mWs;
+  }
+  while (energy_mWs_hiRes<-HI_RES_QUANTUM_mWs) {
+    energy_mWs_hiRes+=HI_RES_QUANTUM_mWs;
+    energy_mWs-=HI_RES_QUANTUM_mWs;
+  }
   lastIntegrationTime = tNow;
 }
 
+void controlUndervoltagePin(void) {
+  if (busVoltage_V<21.0) {
+    digitalWrite(PIN_NOT_UNDERVOLTAGE, 0);
+  }
+  if (busVoltage_V>=22.0) {
+    digitalWrite(PIN_NOT_UNDERVOLTAGE, 1);
+  }
+}
+
 void setup(void) {
-  Serial.begin(9600);
+  Serial.begin(19200);
   Serial.println("INA226 Current Sensor Example Sketch - Continuous");
   delay(100);
 
   Wire.begin();
+  #ifdef USE_INA226
   ina226.init();
+  #endif
 
 #ifdef USE_DISPLAY
   u8x8.begin();
@@ -93,7 +138,9 @@ in an update-interval of 2*140µs*512=143ms. This has the following benefits:
 - catches ripples quite good due to the fast sampling and long averaging.
 - has relaxed requirements regarding integrating the measured values to Ah and Wh. 100ms integration cycle is fine without data lost.
 */
+  #ifdef USE_INA226
   ina226.setAverage(AVERAGE_512); // choose mode and uncomment for change of default
+  #endif
 
   /* Set conversion time in microseconds
      One set of shunt and bus voltage conversion will take: 
@@ -109,8 +156,9 @@ in an update-interval of 2*140µs*512=143ms. This has the following benefits:
      CONV_TIME_4156       4.156 ms
      CONV_TIME_8244       8.244 ms  
   */
+  #ifdef USE_INA226
   ina226.setConversionTime(CONV_TIME_140); //choose conversion time and uncomment for change of default
-  
+  #endif
   /* Set measure mode
   POWER_DOWN - INA226 switched off
   TRIGGERED  - measurement on demand
@@ -125,38 +173,70 @@ in an update-interval of 2*140µs*512=143ms. This has the following benefits:
   // ina226.setCorrectionFactor(0.95);
 
   /* configure the shunt resistance */
-  #define SHUNT_OHMS (0.00101f) /* for demonstration: ~80mm of 1.5mm² copper wire */
+  #define SHUNT_OHMS (0.00114f) /* for demonstration: ~230mm of 4mm² copper wire */
   #define MAXAMPERE (0.08f/SHUNT_OHMS)
+  #ifdef USE_INA226
   ina226.setResistorRange(SHUNT_OHMS, MAXAMPERE);
-  
+  #endif
+  pinMode(PIN_NOT_UNDERVOLTAGE, OUTPUT);
+
   //ina226.waitUntilConversionCompleted(); //if you comment this line the first data might be zero
   lastIntegrationTime = millis();
 }
 
+void sendSerialData(void) {
+  uint32_t tNow;
+  static uint32_t tLastSent=0;
+  tNow = millis();
+  if ((tNow-tLastSent)>1000) {
+    tLastSent=tNow;
+    dtostrf(busVoltage_V,1,2, stringBuffer);               Serial.print("U="); Serial.print(stringBuffer); Serial.println();
+    dtostrf(current_mA/1000.0,1,2, stringBuffer);          Serial.print("I="); Serial.print(stringBuffer); Serial.println();
+    dtostrf(power_mW/1000.0,1,1, stringBuffer);            Serial.print("P="); Serial.print(stringBuffer); Serial.println();
+    dtostrf(capacity_mAs/3600.0/1000.0,1,2, stringBuffer); Serial.print("C="); Serial.print(stringBuffer); Serial.println();
+    dtostrf(energy_mWs/3600.0/1000.0,1,2, stringBuffer);   Serial.print("E="); Serial.print(stringBuffer); Serial.println();
+    dtostrf(millis()/1000,1,0, stringBuffer);              Serial.print("t="); Serial.print(stringBuffer); Serial.println();
+  }
+}
+
 void loop(void) {
-  ina226.readAndClearFlags();
-  shuntVoltage_mV = ina226.getShuntVoltage_mV();
-  busVoltage_V = ina226.getBusVoltage_V();
-  current_mA = ina226.getCurrent_mA();
-  power_mW = ina226.getBusPower();
-  loadVoltage_V  = busVoltage_V + (shuntVoltage_mV/1000);
-  #ifdef USE_SERIAL_PRINT
-  Serial.print("Shunt Voltage [mV]: "); Serial.println(shuntVoltage_mV);
-  Serial.print("Bus Voltage [V]: "); Serial.println(busVoltage_V);
-  Serial.print("Load Voltage [V]: "); Serial.println(loadVoltage_V);
-  Serial.print("Current[mA]: "); Serial.println(current_mA);
-  Serial.print("Bus Power [mW]: "); Serial.println(power_mW);
-  if(!ina226.overflow){
-    Serial.println("Values OK - no overflow");
-  }
-  else{
-    Serial.println("Overflow! Choose higher current range");
-  }
-  Serial.println();
+  #ifdef USE_INA226
+    ina226.readAndClearFlags();
+    shuntVoltage_mV = ina226.getShuntVoltage_mV();
+    busVoltage_V = ina226.getBusVoltage_V();
+    current_mA = ina226.getCurrent_mA();
+    power_mW = busVoltage_V * current_mA;
+    loadVoltage_V  = busVoltage_V + (shuntVoltage_mV/1000);
+    #ifdef USE_SERIAL_PRINT
+      Serial.print("Shunt Voltage [mV]: "); Serial.println(shuntVoltage_mV);
+      Serial.print("Bus Voltage [V]: "); Serial.println(busVoltage_V);
+      Serial.print("Load Voltage [V]: "); Serial.println(loadVoltage_V);
+      Serial.print("Current[mA]: "); Serial.println(current_mA);
+      Serial.print("Bus Power [mW]: "); Serial.println(power_mW);
+      if(!ina226.overflow){
+        Serial.println("Values OK - no overflow");
+      } else {
+       Serial.println("Overflow! Choose higher current range");
+      }
+      Serial.println();
+    #endif
+  #else /* no INA226, just demo */
+    shuntVoltage_mV = 0;
+    busVoltage_V = 12.34;
+    current_mA = 5678;
+    power_mW = busVoltage_V * current_mA;
+    loadVoltage_V  = busVoltage_V + (shuntVoltage_mV/1000);
+  #endif
+
+
+  #ifdef USE_SERIAL_DATAOUT
+  sendSerialData();
   #endif
 
   /* integrate the current and the power over time, to get energy and capacity */
   integrateEnergy();
+
+  controlUndervoltagePin();
 
   /* show the results on the display */
   #ifdef USE_BIG_NUMBERS
@@ -177,14 +257,16 @@ void loop(void) {
     u8x8.drawString(0, 4, "mWs");
     u8x8.drawString(0, 5, "Ah");
     u8x8.drawString(0, 6, "Wh");
+    u8x8.drawString(0, 7, "s");
 
-    dtostrf(busVoltage_V,6,2, stringBuffer);  u8x8.drawString(1, 0, stringBuffer);
-    dtostrf(current_mA,7,0, stringBuffer);    u8x8.drawString(2, 1, stringBuffer);
-    dtostrf(power_mW,6,1, stringBuffer);      u8x8.drawString(2, 2, stringBuffer);
-    dtostrf(capacity_mAs,5,0, stringBuffer);  u8x8.drawString(3, 3, stringBuffer);
-    dtostrf(energy_mWs,5,0, stringBuffer);    u8x8.drawString(3, 4, stringBuffer);
-    dtostrf(capacity_mAs/3600.0/1000.0,5,2, stringBuffer);  u8x8.drawString(3, 5, stringBuffer);
-    dtostrf(energy_mWs/3600.0/1000.0,5,2, stringBuffer);    u8x8.drawString(3, 6, stringBuffer);
+    dtostrf(busVoltage_V,6,2, stringBuffer);  u8x8.drawString(2, 0, stringBuffer);
+    dtostrf(current_mA,7,0, stringBuffer);    u8x8.drawString(3, 1, stringBuffer);
+    dtostrf(power_mW,6,1, stringBuffer);      u8x8.drawString(3, 2, stringBuffer);
+    dtostrf(capacity_mAs,5,0, stringBuffer);  u8x8.drawString(4, 3, stringBuffer);
+    dtostrf(energy_mWs,5,0, stringBuffer);    u8x8.drawString(4, 4, stringBuffer);
+    dtostrf(capacity_mAs/3600.0/1000.0,5,2, stringBuffer);  u8x8.drawString(4, 5, stringBuffer);
+    dtostrf(energy_mWs/3600.0/1000.0,5,2, stringBuffer);    u8x8.drawString(4, 6, stringBuffer);
+    sprintf(stringBuffer, "%ld", millis()/1000);    u8x8.drawString(3, 7, stringBuffer);
   #endif
   delay(100); /* wait a little bit, just to avoid fast flickering display. */
 }
