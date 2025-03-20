@@ -16,7 +16,9 @@
 #include <Arduino.h>
 
 #define USE_SERIAL_DATAOUT
-//#define USE_INA226
+#define SERIAL_TRANSMISSION_CYCLE_TIME_MS 250
+
+#define USE_INA226
 
 #define USE_DISPLAY
 
@@ -188,7 +190,7 @@ void sendSerialData(void) {
   uint32_t tNow;
   static uint32_t tLastSent=0;
   tNow = millis();
-  if ((tNow-tLastSent)>1000) {
+  if ((tNow-tLastSent)>SERIAL_TRANSMISSION_CYCLE_TIME_MS) {
     tLastSent=tNow;
     dtostrf(busVoltage_V,1,2, stringBuffer);               Serial.print("U="); Serial.print(stringBuffer); Serial.println();
     dtostrf(current_mA/1000.0,1,2, stringBuffer);          Serial.print("I="); Serial.print(stringBuffer); Serial.println();
