@@ -175,7 +175,8 @@ in an update-interval of 2*140µs*512=143ms. This has the following benefits:
   // ina226.setCorrectionFactor(0.95);
 
   /* configure the shunt resistance */
-  #define SHUNT_OHMS (0.00114f) /* for demonstration: ~230mm of 4mm² copper wire */
+  //#define SHUNT_OHMS (0.00114f) /* for demonstration: ~230mm of 4mm² copper wire */
+  #define SHUNT_OHMS (0.00114f*271/307) /* for demonstration: ~90mm of 2.5mm² copper wire */
   #define MAXAMPERE (0.08f/SHUNT_OHMS)
   #ifdef USE_INA226
   ina226.setResistorRange(SHUNT_OHMS, MAXAMPERE);
